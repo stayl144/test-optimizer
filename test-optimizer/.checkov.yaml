@@ -1,0 +1,7 @@
+skip-check:
+  # Each entry is a documented risk acceptance: reason, owner, review date.
+  - CKV_AWS_117 # Lambda outside a VPC: no private network targets. platform-team, 2027-05-01
+  - CKV_AWS_116 # Lambda DLQ: failures caught and alerted by Step Functions. platform-team, 2027-05-01
+  - CKV_AWS_272 # Lambda code signing: image signed with Cosign, verified before deploy. platform-team, 2027-05-01
+  - CKV_AWS_144 # S3 cross-region replication: single region by design, see finding F-02. platform-team, 2027-05-01
+  - CKV_AWS_50  # X-Ray tracing: not required at lab scale. platform-team, 2027-05-01

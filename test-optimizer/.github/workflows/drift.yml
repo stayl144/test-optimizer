@@ -1,0 +1,28 @@
+name: drift
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    environment: drift
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - uses: hashicorp/setup-terraform@v3
+      - name: Detect drift in prod
+        working-directory: infra
+        run: |
+          terraform init -input=false
+          terraform workspace select prod
+          IMAGE=$(aws lambda get-function --function-name cro-prod-optimizer \
+            --query 'Code.ImageUri' --output text)
+          terraform plan -lock=false -detailed-exitcode -input=false \
+            -var "image_uri=$IMAGE" -var "alert_email=${{ vars.ALERT_EMAIL }}"
