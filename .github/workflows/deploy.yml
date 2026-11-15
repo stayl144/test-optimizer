@@ -1,0 +1,56 @@
+name: deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment: { type: string, required: true }
+      image: { type: string, required: true }
+    outputs:
+      web_url:
+        value: ${{ jobs.deploy.outputs.web_url }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      web_url: ${{ steps.apply.outputs.web_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: sigstore/cosign-installer@v3
+      - name: Verify the image was signed by this repo's pipeline
+        run: |
+          cosign verify "${{ inputs.image }}" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: Terraform apply
+        id: apply
+        working-directory: infra
+        run: |
+          terraform init -input=false
+          terraform workspace select -or-create ${{ inputs.environment }}
+          terraform apply -auto-approve -input=false \
+            -var "image_uri=${{ inputs.image }}" \
+            -var "alert_email=${{ vars.ALERT_EMAIL }}"
+          echo "web_url=$(terraform output -raw web_url)" >> "$GITHUB_OUTPUT"
+          terraform output -json > deploy-record.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deploy-${{ inputs.environment }}
+          path: infra/deploy-record.json
+          retention-days: 90

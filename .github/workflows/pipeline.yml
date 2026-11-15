@@ -1,0 +1,181 @@
+name: pipeline
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read # least privilege by default
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: crew-reserve-optimizer
+
+jobs:
+  # ---------- Gate 1: every pull request ----------
+  scan:
+    name: security-scans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: mkdir -p reports
+
+      - name: Secrets scan (Gitleaks)
+        run: >
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect
+          -s /repo --report-format sarif --report-path /repo/reports/gitleaks.sarif
+
+      - name: SAST (Semgrep)
+        run: |
+          pip install semgrep
+          semgrep scan --config p/python --error --sarif --output reports/semgrep.sarif app/
+
+      - name: Dependency and Dockerfile scan (Trivy)
+        run: >
+          docker run --rm -v "$PWD:/src" aquasec/trivy:latest fs
+          --scanners vuln,misconfig --skip-dirs /src/infra --skip-dirs /src/bootstrap
+          --ignorefile /src/.trivyignore --severity HIGH,CRITICAL --exit-code 1
+          --format sarif --output /src/reports/trivy-fs.sarif /src
+
+      - name: IaC scan (Checkov)
+        run: |
+          pip install checkov
+          checkov -d infra -d bootstrap --config-file .checkov.yaml \
+            -o cli -o sarif --output-file-path console,reports
+
+      - uses: hashicorp/setup-terraform@v3
+      - name: Terraform format and validate
+        working-directory: infra
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false
+          terraform validate
+
+      - name: Keep scan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-reports
+          path: reports/
+          retention-days: 90
+
+  # ---------- Gate 2: build once, sign, scan the image ----------
+  build:
+    if: github.event_name == 'push'
+    needs: scan
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write # OIDC to AWS and keyless Cosign signing
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push (tag = commit SHA, immutable)
+        id: push
+        run: |
+          REPO=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}
+          docker build -t $REPO:${{ github.sha }} app/
+          docker push $REPO:${{ github.sha }}
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $REPO:${{ github.sha }})
+          echo "image=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Image scan (Trivy), block on critical
+        run: >
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
+          aquasec/trivy:latest image --severity CRITICAL --exit-code 1
+          ${{ steps.push.outputs.image }}
+
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign image (keyless)
+        run: cosign sign --yes ${{ steps.push.outputs.image }}
+
+  # ---------- Promote the same digest ----------
+  deploy-dev:
+    needs: build
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
+      image: ${{ needs.build.outputs.image }}
+    permissions:
+      contents: read
+      id-token: write
+
+  deploy-staging:
+    needs: [build, deploy-dev]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: staging
+      image: ${{ needs.build.outputs.image }}
+    permissions:
+      contents: read
+      id-token: write
+
+  dast-staging:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: DAST baseline (OWASP ZAP)
+        run: |
+          mkdir -p zap && chmod 777 zap
+          docker run --rm -v "$PWD/zap:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t "${{ needs.deploy-staging.outputs.web_url }}" -r zap-report.html -I
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: zap/
+          retention-days: 90
+
+  deploy-prod: # waits for the required reviewer on the prod environment
+    needs: [build, dast-staging]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod
+      image: ${{ needs.build.outputs.image }}
+    permissions:
+      contents: read
+      id-token: write
+
+  # ---------- Evidence to the locked audit bucket ----------
+  evidence:
+    needs: [build, deploy-prod]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: evidence/
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Record run metadata and upload
+        run: |
+          mkdir -p evidence
+          cat > evidence/run.json <<JSON
+          {"run_id": "${{ github.run_id }}", "commit": "${{ github.sha }}",
+           "actor": "${{ github.actor }}", "image": "${{ needs.build.outputs.image }}",
+           "prod_result": "${{ needs.deploy-prod.result }}"}
+          JSON
+          aws s3 sync evidence/ s3://${{ vars.AUDIT_BUCKET }}/evidence/${{ github.run_id }}/

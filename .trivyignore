@@ -1,0 +1,2 @@
+# DS002 root user: Lambda base image; the Lambda runtime runs code as a non-root user. Owner: platform-team. Review: 2027-05-01
+DS002
