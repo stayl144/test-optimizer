@@ -1,7 +1,51 @@
+# Checkov exception register.
+# Every skipped rule is a documented risk acceptance: reason, owner, review date.
+# Lab note: skips here apply repo-wide. In production, prefer per-resource
+# skips (#checkov:skip=ID:reason on the resource) so new resources are still checked.
 skip-check:
-  # Each entry is a documented risk acceptance: reason, owner, review date.
-  - CKV_AWS_117 # Lambda outside a VPC: no private network targets. platform-team, 2027-05-01
-  - CKV_AWS_116 # Lambda DLQ: failures caught and alerted by Step Functions. platform-team, 2027-05-01
-  - CKV_AWS_272 # Lambda code signing: image signed with Cosign, verified before deploy. platform-team, 2027-05-01
-  - CKV_AWS_144 # S3 cross-region replication: single region by design, see finding F-02. platform-team, 2027-05-01
-  - CKV_AWS_50  # X-Ray tracing: not required at lab scale. platform-team, 2027-05-01
+  # --- Accepted at original design ---
+  - CKV_AWS_117   # Lambda outside a VPC: no private network targets. platform-team, review 2027-05-01
+  - CKV_AWS_116   # Lambda DLQ: failures caught and alerted by Step Functions. platform-team, review 2027-05-01
+  - CKV_AWS_272   # Lambda code signing: image signed with Cosign, verified before deploy. platform-team, review 2027-05-01
+  - CKV_AWS_144   # S3 cross-region replication: single region by design, see finding F-02. platform-team, review 2027-05-01
+  - CKV_AWS_50    # Lambda X-Ray tracing: not required at lab scale. platform-team, review 2027-05-01
+
+  # --- Accepted after first scan triage (2026-11-14) ---
+  # Cost or scale: not justified for an internal lab workload
+  - CKV_AWS_18    # S3 server access logging: CloudTrail covers API activity; access logs add cost. platform-team, review 2027-05-01
+  - CKV_AWS_86    # CloudFront access logging: internal static page, low value. platform-team, review 2027-05-01
+  - CKV2_AWS_31   # WAF logging: WAF metrics enabled; full logging adds cost. platform-team, review 2027-05-01
+  - CKV_AWS_284   # Step Functions X-Ray: not required at lab scale. platform-team, review 2027-05-01
+  - CKV_AWS_285   # Step Functions execution logging: failures alert via SNS; gap logged as finding. platform-team, review 2027-05-01
+  - CKV2_AWS_62   # S3 event notifications: no downstream consumer needs them. platform-team, review 2027-05-01
+  - CKV_AWS_115   # Lambda reserved concurrency: new-account quota too low to reserve safely. platform-team, review 2027-05-01
+
+  # Resilience: single-region by design (finding F-02)
+  - CKV_AWS_310   # CloudFront origin failover: single region by design, see F-02. platform-team, review 2027-05-01
+
+  # No custom domain in the lab
+  - CKV2_AWS_42   # Custom SSL certificate: no owned domain; uses CloudFront default cert. platform-team, review 2027-05-01
+  - CKV_AWS_174   # TLS 1.2 minimum: requires a custom certificate (see CKV2_AWS_42). platform-team, review 2027-05-01
+
+  # Encryption: AWS-managed keys accepted where a customer key adds key-policy work
+  - CKV_AWS_145   # S3 KMS by default: data bucket uses a customer KMS key; other buckets use SSE-S3. security-eng, review 2027-05-01
+  - CKV_AWS_158   # CloudWatch Logs KMS: encrypted at rest with AWS-managed keys. security-eng, review 2027-05-01
+  - CKV_AWS_173   # Lambda env var KMS: env vars hold no secrets (names only). security-eng, review 2027-05-01
+  - CKV_AWS_297   # Scheduler CMK: schedule holds no sensitive data. security-eng, review 2027-05-01
+  - CKV2_AWS_64   # KMS key policy: default key policy (account root) used. security-eng, review 2027-05-01
+
+  # Data-lifecycle rules not needed on infrastructure buckets
+  - CKV_AWS_21    # Versioning on web/config/audit buckets: web rebuilt from git; audit protected by object lock. platform-team, review 2027-05-01
+  - CKV2_AWS_61   # Lifecycle on non-data buckets: state, audit and config buckets keep data deliberately. platform-team, review 2027-05-01
+
+  # False positives: control implemented with an AWS managed resource the scanner's graph check does not follow
+  - CKV2_AWS_32   # Response headers: Managed-SecurityHeadersPolicy attached by ID; verified manually. security-eng, review 2027-05-01
+  - CKV2_AWS_47   # Log4j WAF rule: AWSManagedRulesKnownBadInputsRuleSet attached; verified manually. security-eng, review 2027-05-01
+
+  # Platform (bootstrap) accepted risks
+  - CKV2_AWS_56   # IAMFullAccess on deploy roles: lab shortcut, recorded as finding F-01. platform-team, review 2026-12-15
+  - CKV_AWS_35    # CloudTrail KMS CMK: logs encrypted with SSE-S3 and protected by object lock. security-eng, review 2027-05-01
+  - CKV_AWS_252   # CloudTrail SNS topic: no consumer for per-file notifications. platform-team, review 2027-05-01
+  - CKV2_AWS_10   # CloudTrail to CloudWatch Logs: logs reviewed in S3 and Event history. platform-team, review 2027-05-01
+  - CKV_AWS_28    # PITR on Terraform lock table: holds only short-lived locks, no data. platform-team, review 2027-05-01
+  - CKV_AWS_119   # CMK on Terraform lock table: holds only short-lived locks, no data. platform-team, review 2027-05-01

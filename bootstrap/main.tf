@@ -108,6 +108,14 @@ resource "aws_s3_bucket" "config" {
   force_destroy = true
 }
 
+resource "aws_s3_bucket_public_access_block" "config" {
+  bucket                  = aws_s3_bucket.config.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 resource "aws_s3_bucket_policy" "config" {
   bucket = aws_s3_bucket.config.id
   policy = jsonencode({
@@ -133,7 +141,10 @@ resource "aws_s3_bucket_policy" "config" {
 resource "aws_config_configuration_recorder" "main" {
   name     = "default"
   role_arn = aws_iam_service_linked_role.config.arn
-  recording_group { all_supported = true }
+  recording_group {
+    all_supported                 = true
+    include_global_resource_types = true # record IAM changes too
+  }
 }
 
 resource "aws_config_delivery_channel" "main" {

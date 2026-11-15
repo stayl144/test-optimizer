@@ -40,6 +40,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "data" {
     filter {}
     expiration { days = 365 }
     noncurrent_version_expiration { noncurrent_days = 30 }
+    abort_incomplete_multipart_upload { days_after_initiation = 7 }
   }
 }
 
@@ -94,7 +95,7 @@ resource "aws_iam_role_policy" "optimizer" {
 
 resource "aws_cloudwatch_log_group" "optimizer" {
   name              = "/aws/lambda/${local.name}-optimizer"
-  retention_in_days = 90
+  retention_in_days = 365
 }
 
 resource "aws_lambda_function" "optimizer" {
@@ -133,7 +134,7 @@ resource "aws_iam_role_policy" "api" {
 
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/aws/lambda/${local.name}-api"
-  retention_in_days = 90
+  retention_in_days = 365
 }
 
 resource "aws_lambda_function" "api" {
@@ -289,7 +290,7 @@ resource "aws_apigatewayv2_route" "placements" {
 
 resource "aws_cloudwatch_log_group" "api_access" {
   name              = "/apigw/${local.name}"
-  retention_in_days = 90
+  retention_in_days = 365
 }
 
 resource "aws_apigatewayv2_stage" "default" {
@@ -360,6 +361,24 @@ resource "aws_wafv2_web_acl" "web" {
       sampled_requests_enabled   = true
     }
   }
+  rule {
+    name     = "aws-known-bad-inputs"
+    priority = 2
+    override_action {
+      none {}
+    }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesKnownBadInputsRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "aws-known-bad-inputs"
+      sampled_requests_enabled   = true
+    }
+  }
   visibility_config {
     cloudwatch_metrics_enabled = true
     metric_name                = "${local.name}-waf"
@@ -384,14 +403,18 @@ resource "aws_cloudfront_distribution" "web" {
     origin_access_control_id = aws_cloudfront_origin_access_control.web.id
   }
   default_cache_behavior {
-    target_origin_id       = "web"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD"]
-    cached_methods         = ["GET", "HEAD"]
-    cache_policy_id        = "658327ea-f89d-4fab-a63d-7e88639e58f6" # Managed-CachingOptimized
+    target_origin_id           = "web"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD"]
+    cached_methods             = ["GET", "HEAD"]
+    cache_policy_id            = "658327ea-f89d-4fab-a63d-7e88639e58f6" # Managed-CachingOptimized
+    response_headers_policy_id = "67f7725c-6f97-4210-82d7-5512b31e9d03" # Managed-SecurityHeadersPolicy
   }
   restrictions {
-    geo_restriction { restriction_type = "none" }
+    geo_restriction {
+      restriction_type = "whitelist"
+      locations        = ["US"]
+    }
   }
   viewer_certificate { cloudfront_default_certificate = true }
 }
